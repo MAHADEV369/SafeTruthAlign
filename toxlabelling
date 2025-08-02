@@ -1,0 +1,415 @@
+import spacy
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.tag import pos_tag
+from sentence_transformers import SentenceTransformer
+import numpy as np
+import pandas as pd
+
+# Download necessary NLTK data
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+
+# Load models
+nlp = spacy.load("en_core_web_sm")
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Context keywords
+keyword_to_category = {
+    "religion": [
+        "religious_intolerance",
+        "hate_speech",
+        "cultural_sensitivity",
+        "stereotyping",
+        "toxicity",
+        "harassment"                     # ⚑ non-protected-group insults
+    ],
+    "politics": [
+        "political_extremism",
+        "partisanship",
+        "misinformation",
+        "disinformation",
+        "bias",
+        "toxicity",
+        "propaganda"                     # ⚑ state / partisan influence ops
+    ],
+    "health": [
+        "misinformation",
+        "disinformation",
+        "harmful_advice",
+        "factual_inaccuracy",
+        "safety",
+        "self_harm_content"              # ⚑ suicide / self-harm ideation
+    ],
+    "gender": [
+        "gender_bias",
+        "stereotyping",
+        "cultural_sensitivity",
+        "hate_speech",
+        "discrimination",
+        "toxicity",
+        "harassment"                     # ⚑ non-protected insults
+    ],
+    "race": [
+        "racial_bias",
+        "hate_speech",
+        "discrimination",
+        "stereotyping",
+        "toxicity",
+        "harassment"                     # ⚑
+    ],
+    "law": [
+        "legality",
+        "ethics",
+        "privacy",
+        "fairness",
+        "compliance",
+        "defamation"                     # ⚑ false allegations / libel
+    ],
+    "money": [
+        "financial_fairness",
+        "fraud",
+        "scams",
+        "ethics",
+        "misinformation",
+        "market_manipulation"            # ⚑ pump-and-dump, insider tips
+    ],
+    "truth": [
+        "truthfulness",
+        "factuality",
+        "hallucination",
+        "misinformation",
+        "epistemic_uncertainty",
+        "defamation"                     # ⚑ fits the truth axis too
+    ],
+    "privacy": [
+        "privacy_violation",
+        "security",
+        "data_leakage",
+        "safety",
+        "doxxing"                        # ⚑ personal-info exposure
+    ],
+    "fairness": [
+        "fairness",
+        "bias",
+        "equality",
+        "justice",
+        "discrimination",
+        "algorithmic_manipulation"       # ⚑ unfair ranking / targeting
+    ],
+    "lgbtq": [
+        "sexual_orientation_bias",
+        "hate_speech",
+        "cultural_sensitivity",
+        "discrimination",
+        "toxicity",
+        "harassment"                     # ⚑
+    ],
+    "environment": [
+        "climate_misinformation",
+        "environmental_ethics",
+        "cultural_sensitivity",
+        "propaganda"                     # ⚑ climate-change denial ops
+    ],
+    "disability": [
+        "ableism",
+        "disability_bias",
+        "discrimination",
+        "cultural_sensitivity",
+        "stereotyping",
+        "harassment"                     # ⚑
+    ],
+    "age": [
+        "ageism",
+        "age_bias",
+        "discrimination",
+        "stereotyping",
+        "harassment"                     # ⚑
+    ],
+    "nationality": [
+        "national_origin_bias",
+        "xenophobia",
+        "discrimination",
+        "hate_speech",
+        "harassment"                     # ⚑
+    ],
+    "violence": [
+        "incitement",
+        "harm",
+        "violence_content",
+        "toxicity",
+        "safety",
+        "graphic_violence"               # ⚑ gory / shocking imagery
+    ],
+    "drugs": [
+        "harmful_advice",
+        "misinformation",
+        "illegality",
+        "safety",
+        "addiction_promotion"            # ⚑ encouraging abuse
+    ],
+    "crime": [
+        "illegality",
+        "criminal_advice",
+        "harm",
+        "misinformation",
+        "cybercrime"                     # ⚑ hacking, phishing tutorials
+    ],
+    "sexuality": [
+        "sexual_content",
+        "hate_speech",
+        "cultural_sensitivity",
+        "discrimination",
+        "sexual_exploitation",           # ⚑ non-consensual / trafficking
+        "minor_protection"               # ⚑ CSAM or any sexual minors
+    ],
+    "mental_health": [
+        "harmful_advice",
+        "misinformation",
+        "stereotyping",
+        "sensitivity",
+        "self_harm_content"              # ⚑
+    ],
+    "technology": [
+        "privacy",
+        "security",
+        "misinformation",
+        "bias",
+        "data_leakage",
+        "deepfake_content"               # ⚑ synthetic media deception
+    ],
+    "ai": [
+        "alignment",
+        "fairness",
+        "bias",
+        "safety",
+        "hallucination",
+        "misuse",
+        "model_exploitation"             # ⚑ jail-breaks, prompt-injections
+    ],
+    "factuality": [
+        "truthfulness",
+        "factual_inaccuracy",
+        "hallucination",
+        "misinformation",
+        "defamation"                     # ⚑ factual harms
+    ],
+    "toxicity": [
+        "toxicity",
+        "hate_speech",
+        "harm",
+        "offensiveness",
+        "harassment"                     # ⚑ non-protected insults
+    ],
+    "alignment": [
+        "alignment",
+        "value_misalignment",
+        "ethics",
+        "safe_behaviour",
+        "reward_hacking"                 # ⚑ specification gaming
+    ],
+    # NEW high-risk keyword buckets you may want to introduce
+    "self_harm": [
+        "self_harm_content",
+        "suicidal_ideation",
+        "harmful_advice"
+    ],
+    "spam": [
+        "unsolicited_content",
+        "scams",
+        "fraud"
+    ]
+}
+
+
+
+keyword_to_category = {
+    # ---------- Core set you supplied ----------
+    "religion":           ["religious_intolerance", "cultural_sensitivity"],
+    "politics":           ["political_extremism", "bias"],
+    "health":             ["misinformation", "safety"],
+    "gender":             ["bias", "cultural_sensitivity"],
+    "race":               ["bias", "hate"],
+    "law":                ["ethics", "fairness"],
+    "money":              ["ethics", "fairness"],
+    "truth":              ["truthfulness", "misinformation"],
+    "privacy":            ["privacy", "safety"],
+    "fairness":           ["fairness", "bias"],
+    "lgbtq":              ["cultural_sensitivity", "bias"],
+    "environment":        ["ethics", "cultural_sensitivity"],
+
+    # ---------- Hate & Extremism ----------
+    "terrorism":          ["political_extremism", "hate"],
+    "nazism":             ["political_extremism", "hate"],
+    "neo_nazi":           ["political_extremism", "hate"],
+    "isis":               ["political_extremism", "hate"],
+    "xenophobia":         ["hate", "cultural_sensitivity"],
+    "white_supremacy":    ["hate", "political_extremism"],
+    "holocaust_denial":   ["misinformation", "hate"],
+
+    # ---------- Violence & Self-harm ----------
+    "violence":           ["toxicity", "safety"],
+    "assault":            ["toxicity", "safety"],
+    "murder":             ["toxicity", "safety"],
+    "bomb":               ["illicit_behavior", "safety"],
+    "war":                ["political_extremism", "misinformation"],
+    "suicide":            ["self_harm", "safety"],
+    "self_harm":          ["self_harm", "safety"],
+
+    # ---------- Sexual / Adult ----------
+    "sexual":             ["sexual_content", "cultural_sensitivity"],
+    "porn":               ["sexual_content", "safety"],
+    "rape":               ["sexual_content", "toxicity"],
+    "incest":             ["sexual_content", "child_safety"],
+    "bestiality":         ["sexual_content", "illegal_content"],
+    "minors":             ["child_safety", "illegal_content"],
+
+    # ---------- Illicit or Regulated Behavior ----------
+    "drugs":              ["illicit_behavior", "safety"],
+    "narcotics":          ["illicit_behavior", "safety"],
+    "weapons":            ["illicit_behavior", "safety"],
+    "explosives":         ["illicit_behavior", "safety"],
+    "lockpicking":        ["illicit_behavior", "security"],
+    "hacking":            ["illicit_behavior", "security"],
+    "phishing":           ["illicit_behavior", "ethics"],
+    "fraud":              ["illicit_behavior", "ethics"],
+    "scam":               ["misinformation", "ethics"],
+    "money_laundering":   ["illicit_behavior", "ethics"],
+
+    # ---------- Misinformation / Conspiracies ----------
+    "conspiracy":         ["misinformation", "truthfulness"],
+    "pseudoscience":      ["misinformation", "truthfulness"],
+    "flat_earth":         ["misinformation", "truthfulness"],
+    "anti_vax":           ["misinformation", "truthfulness"],
+    "qanon":              ["misinformation", "political_extremism"],
+    "deep_state":         ["misinformation", "political_extremism"],
+    "chemtrails":         ["misinformation", "truthfulness"],
+    "climate_change_hoax":["misinformation", "truthfulness"],
+
+    # ---------- Defamation & Privacy ----------
+    "defame":             ["defamation", "ethics"],
+    "slander":            ["defamation", "ethics"],
+    "libel":              ["defamation", "ethics"],
+    "doxxing":            ["privacy", "safety"],
+    "social_security_number": ["privacy", "security"],
+    "credit_card_number": ["privacy", "security"],
+    "address":            ["privacy"],
+    "phone_number":       ["privacy"],
+
+    # ---------- Economic / Financial Manipulation ----------
+    "insider_trading":    ["illicit_behavior", "ethics"],
+    "bribe":              ["illicit_behavior", "ethics"],
+    "corruption":         ["illicit_behavior", "fairness"],
+    "pump_and_dump":      ["misinformation", "ethics"],
+
+    # ---------- Geo-political Hotspots ----------
+    "sanctions":          ["politics", "fairness"],
+    "election_fraud":     ["misinformation", "politics"],
+
+    # ---------- AI-specific Security ----------
+    "deepfake":           ["misinformation", "ethics"],
+    "prompt_injection":   ["security", "safety"],
+    "jailbreak":          ["security", "safety"],
+
+    # ---------- Catch-alls / Shortcuts ----------
+    "toxic":              ["toxicity"],
+    "hate":               ["hate"],
+    "bias":               ["bias"],
+    "spam":               ["misinformation"],
+    "illegal":            ["illicit_behavior"],
+}
+
+
+# Precompute embeddings
+context_embs = {ctx: model.encode(keywords) for ctx, keywords in context_keywords.items() if keywords}
+
+def detect_entities(prompt):
+    """Detect entities across all contexts using NER and keyword matching."""
+    doc = nlp(prompt)
+    entities = []
+    prompt_lower = prompt.lower()
+
+    # NER for named entities
+    for ent in doc.ents:
+        if ent.label_ in ["PERSON", "GPE", "ORG", "LOC"]:
+            entities.append({"entity": ent.text, "category": "general"})  # Default, refine below
+
+    # Keyword matching for context-specific entities
+    for context, keywords in context_keywords.items():
+        for keyword in keywords:
+            if keyword in prompt_lower:
+                entities.append({"entity": keyword, "category": context})
+
+    return entities
+
+def detect_intents(prompt, entities):
+    """Detect intents based on entities and keyword_to_category."""
+    intents = set()
+    for entity in entities:
+        if entity["category"] in keyword_to_category:
+            intents.update(keyword_to_category[entity["category"]])
+    # Additional intent cues
+    prompt_lower = prompt.lower()
+    if any(kw in prompt_lower for kw in ["ethical", "moral"]):
+        intents.add("ethics")
+    if any(kw in prompt_lower for kw in ["hate", "violence"]):
+        intents.add("hate")
+    if any(kw in prompt_lower for kw in ["false", "mislead"]):
+        intents.add("misinformation")
+    return list(intents)
+
+def detect_style(prompt):
+    """Infer style of prompt based on syntax."""
+    tokens = word_tokenize(prompt)
+    tagged = pos_tag(tokens)
+    if any(pos.startswith('VB') for _, pos in tagged):  # Imperative verbs
+        return "imperative"
+    elif any(pos.startswith('WR') for _, pos in tagged):  # Wh-words
+        return "question"
+    else:
+        return "narrative"
+
+def process_prompt(prompt):
+    """Process prompt to detect entities, intents, style, and additional labels."""
+    entities = detect_entities(prompt)
+    intents = detect_intents(prompt, entities)
+    style = detect_style(prompt)
+
+    # Confidence scores (simplified)
+    confidence_scores = {entity["category"]: 0.8 for entity in entities if entity["category"] != "general"}
+
+    # Additional labels
+    additional_labels = {
+        "city_presence": any(ent.label_ == "GPE" for ent in nlp(prompt).ents),
+        "toxicity_level": "low"  # Placeholder, could use a classifier
+    }
+
+    return {
+        "prompt": prompt,
+        "entities": entities,
+        "intents": intents,
+        "style_of_prompt": style,
+        "confidence_scores": confidence_scores,
+        "additional_labels": additional_labels
+    }
+
+# Read CSV file with 10 prompts
+try:
+    df = pd.read_csv("prompts.csv", usecols=["prompt"]).head(10).dropna()
+    if len(df) < 10:
+        raise ValueError("CSV must contain at least 10 prompts.")
+except FileNotFoundError:
+    raise FileNotFoundError("prompts.csv not found. Please create a CSV file with a 'prompt' column containing at least 10 prompts.")
+except ValueError as e:
+    raise ValueError(f"Error: {e}")
+
+# Process prompts
+results = []
+for prompt in df["prompt"]:
+    result = process_prompt(prompt)
+    results.append(result)
+
+# Convert to DataFrame and save
+output_df = pd.DataFrame(results)
+output_df.to_csv("context_labeled_output.csv", index=False)
+print("Results saved to context_labeled_output.csv")
