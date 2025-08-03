@@ -1,0 +1,111 @@
+import torch
+import pandas as pd
+from transformers import pipeline
+
+# ============ 1. SETUP: GPU & Pipelines ============
+
+# Use GPU if available (L4 or other CUDA device)
+device = 0 if torch.cuda.is_available() else -1
+
+# Token Classification (NER) model
+ner = pipeline(
+    "token-classification",
+    model="dslim/bert-base-NER",
+    aggregation_strategy="simple",
+    device=device
+)
+
+# Zero-shot Classification (semantic context/intent)
+zero_shot = pipeline(
+    "zero-shot-classification",
+    model="facebook/bart-large-mnli",
+    device=device
+)
+
+# Define your context/intent label set (customize/expand as needed)
+context_labels = [
+    "toxicity", "hate speech", "bias", "misinformation", "truthfulness",
+    "political extremism", "cultural sensitivity", "self harm", "safety",
+    "hallucination", "privacy", "fairness", "ethics", "sexual content",
+    "illicit behavior", "violence", "harm", "financial fraud", "propaganda",
+    "child safety"
+]
+
+
+# ============ 2. ANALYSIS FUNCTION ============
+
+def analyze_prompt(prompt, context_labels, top_k=5, threshold=0.3):
+    # a) NER: Detect entities in the prompt
+    entities = ner(prompt)
+    ner_results = [
+        {
+            "entity": ent["word"],
+            "type": ent["entity_group"],
+            "score": float(ent["score"])
+        }
+        for ent in entities
+    ]
+    # b) Zero-shot classification: Detect context(s)
+    zero_result = zero_shot(prompt, context_labels, multi_label=True)
+    context_results = [
+        {"label": label, "score": float(score)}
+        for label, score in zip(zero_result["labels"], zero_result["scores"])
+        if score >= threshold
+    ][:top_k]
+
+    # c) Optional: Add a flag if prompt is likely a question (basic heuristic)
+    is_question = prompt.strip().endswith("?")
+
+    # d) (Optional) - Add more attributes or custom logic as needed
+
+    # Output structure
+    return {
+        "prompt": prompt,
+        "entities": ner_results,
+        "contexts": context_results,
+        "is_question": is_question
+    }
+
+
+# ============ 3. DATA LOADING ============
+
+try:
+    df = pd.read_csv("prompts.csv", usecols=["prompt"]).dropna().head(10)
+    if len(df) < 10:
+        raise ValueError("CSV must contain at least 10 prompts.")
+except FileNotFoundError:
+    raise FileNotFoundError("prompts.csv not found. Please create a CSV file with a 'prompt' column containing at least 10 prompts.")
+except ValueError as e:
+    raise ValueError(f"Error: {e}")
+
+
+
+# ============ 4. BATCH PROCESSING ============
+
+results = []
+for prompt in df["prompt"]:
+    result = analyze_prompt(prompt, context_labels)
+    results.append(result)
+
+
+
+# ============ 5. OUTPUT ============
+
+# You may want to flatten nested results for better CSV compatibility
+def flatten_result(result):
+    # Entities and contexts are stored as lists of dicts. Join them as strings for CSV output.
+    entities_str = "; ".join([f"{e['entity']}({e['type']},{e['score']:.2f})" for e in result["entities"]]) if result["entities"] else ""
+    contexts_str = "; ".join([f"{c['label']}({c['score']:.2f})" for c in result["contexts"]]) if result["contexts"] else ""
+    return {
+        "prompt": result["prompt"],
+        "entities": entities_str,
+        "contexts": contexts_str,
+        "is_question": result["is_question"]
+    }
+
+flat_results = [flatten_result(res) for res in results]
+output_df = pd.DataFrame(flat_results)
+output_df.to_csv("context_labeled_output_gpu.csv", index=False)
+print("Results saved to context_labeled_output_gpu.csv")
+
+
